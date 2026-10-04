@@ -29,9 +29,7 @@ REQUIRED_VARS: Tuple[str, ...] = (
     "SOURCE_GROUP_ID",
     "TARGET_CHANNEL",
     "ADMIN_IDS",
-    "ONE_PIECE_TOPIC_ID",
-    "NARUTO_TOPIC_ID",
-    "BLEACH_TOPIC_ID",
+    "WEB_SERIES_TOPIC_ID",
     "AUTO_PUBLISH",
     "INCLUDE_HD_CLAIM",
     "TIMEZONE",
@@ -133,9 +131,7 @@ class TopicConfig:
 #: Single source of truth for topic metadata. Adding an anime only requires a
 #: new entry here plus a matching environment variable.
 TOPIC_SPECS: Tuple[Tuple[str, str, str], ...] = (
-    ("ONE_PIECE_TOPIC_ID", "One Piece", "\U0001F4FA"),
-    ("NARUTO_TOPIC_ID", "Naruto", "\U0001F365"),
-    ("BLEACH_TOPIC_ID", "Bleach", "⚔️"),
+("WEB_SERIES_TOPIC_ID", "Web Series", "\U0001F4C1"),
 )
 
 
