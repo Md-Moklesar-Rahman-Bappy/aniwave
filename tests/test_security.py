@@ -66,7 +66,7 @@ def test_env_example_documents_every_required_variable():
     example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
     for name in (
         "TELEGRAM_BOT_TOKEN", "SOURCE_GROUP_ID", "TARGET_CHANNEL", "ADMIN_IDS",
-        "ONE_PIECE_TOPIC_ID", "NARUTO_TOPIC_ID", "BLEACH_TOPIC_ID",
+        "WEB_SERIES_TOPIC_ID",
         "AUTO_PUBLISH", "INCLUDE_HD_CLAIM", "TIMEZONE", "DATABASE_PATH", "LOG_LEVEL",
     ):
         assert re.search(rf"^{name}=", example, re.MULTILINE), f"{name} missing from .env.example"
@@ -145,9 +145,7 @@ def test_token_is_read_only_from_the_environment(monkeypatch):
         ("SOURCE_GROUP_ID", "-1004428338491"),
         ("TARGET_CHANNEL", "@aniwavebd"),
         ("ADMIN_IDS", "6589890362"),
-        ("ONE_PIECE_TOPIC_ID", "23"),
-        ("NARUTO_TOPIC_ID", "6"),
-        ("BLEACH_TOPIC_ID", "8"),
+        ("WEB_SERIES_TOPIC_ID", "33"),
         ("AUTO_PUBLISH", "false"),
         ("INCLUDE_HD_CLAIM", "false"),
         ("TIMEZONE", "Asia/Dhaka"),
@@ -225,3 +223,45 @@ def test_requirements_are_pinned():
         assert "==" in line, f"dependency not pinned: {line}"
     assert "python-telegram-bot==21.11.1" in text
     assert "tzdata==" in text, "tzdata is required on Windows for TIMEZONE validation"
+
+# --------------------------------------------------------------------------- #
+# Topic configuration consistency
+# --------------------------------------------------------------------------- #
+
+
+def test_declared_topic_is_documented_in_env_example():
+    """config.TOPIC_SPECS and .env.example must not contradict each other."""
+    import config as config_module
+
+    example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+    for var_name, _title, _emoji in config_module.TOPIC_SPECS:
+        assert re.search(rf"^{var_name}=", example, re.MULTILINE), (
+            f"{var_name} is declared in TOPIC_SPECS but missing from .env.example"
+        )
+
+
+def test_topic_variable_names_are_documented_as_case_sensitive():
+    example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "CASE-SENSITIVELY" in example or "case-sensitively" in example.lower()
+
+
+def test_required_vars_match_declared_topics():
+    """Every declared topic variable is validated as required."""
+    import config as config_module
+
+    for var_name, _title, _emoji in config_module.TOPIC_SPECS:
+        assert var_name in config_module.REQUIRED_VARS
+
+
+def test_local_env_declares_the_active_topic():
+    """The user's .env must contain the declared topic variable."""
+    import config as config_module
+
+    env_path = PROJECT_ROOT / ".env"
+    if not env_path.exists():
+        pytest.skip("no local .env in this checkout")
+    env_text = env_path.read_text(encoding="utf-8")
+    for var_name, _title, _emoji in config_module.TOPIC_SPECS:
+        assert re.search(rf"^{var_name}\s*=", env_text, re.MULTILINE), (
+            f"local .env is missing {var_name}"
+        )

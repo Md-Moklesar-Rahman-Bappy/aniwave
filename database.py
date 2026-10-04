@@ -26,7 +26,7 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: Media types this bot is allowed to publish.
 SUPPORTED_MEDIA_TYPES: Tuple[str, ...] = ("video", "animation", "audio", "photo", "document")
@@ -74,6 +74,23 @@ _MEDIA_ITEMS_V2_COLUMNS: Tuple[Tuple[str, str], ...] = (
     ("preview_message_id", "INTEGER"),
     ("last_error", "TEXT"),
     ("version", "INTEGER NOT NULL DEFAULT 1"),
+)
+
+#: Schema v3 - original Telegram representation plus logical category and file
+#: metadata, so a document upload (e.g. ``.mkv``) can be republished correctly and
+#: diagnosed later. Every column is nullable so existing rows migrate losslessly.
+_MEDIA_ITEMS_V3_COLUMNS: Tuple[Tuple[str, str], ...] = (
+    ("telegram_media_type", "TEXT"),
+    ("logical_media_type", "TEXT"),
+    ("file_name", "TEXT"),
+    ("mime_type", "TEXT"),
+    ("file_size", "INTEGER"),
+)
+
+#: Every additive column set, applied in order for any starting schema version.
+_ADDITIVE_COLUMNS: Tuple[Tuple[Tuple[str, str], ...], ...] = (
+    _MEDIA_ITEMS_V2_COLUMNS,
+    _MEDIA_ITEMS_V3_COLUMNS,
 )
 
 
@@ -208,14 +225,17 @@ class Database:
             existing = await self._table_exists(ITEMS_TABLE)
             await conn.execute(_CREATE_MEDIA_ITEMS)
             if existing:
-                # Legacy database: keep all rows, only add the new columns.
+                # Legacy database: keep every row, only add the missing columns.
                 present = set(await self._columns(ITEMS_TABLE))
-                for column, decl in _MEDIA_ITEMS_V2_COLUMNS:
-                    if column not in present:
-                        await conn.execute(
-                            f"ALTER TABLE {ITEMS_TABLE} ADD COLUMN {column} {decl}"
-                        )
-                        logger.info("migration-added-column table=%s column=%s", ITEMS_TABLE, column)
+                for column_set in _ADDITIVE_COLUMNS:
+                    for column, decl in column_set:
+                        if column not in present:
+                            await conn.execute(
+                                f"ALTER TABLE {ITEMS_TABLE} ADD COLUMN {column} {decl}"
+                            )
+                            logger.info(
+                                "migration-added-column table=%s column=%s", ITEMS_TABLE, column
+                            )
             await conn.execute(_CREATE_ALBUMS)
             await conn.execute(_CREATE_ALBUM_ITEMS)
             for statement in _INDEXES:
@@ -303,6 +323,11 @@ class Database:
         media_group_id: Optional[str] = None,
         status: str = Status.PENDING,
         final_caption: str = "",
+        telegram_media_type: Optional[str] = None,
+        logical_media_type: Optional[str] = None,
+        file_name: Optional[str] = None,
+        mime_type: Optional[str] = None,
+        file_size: Optional[int] = None,
     ) -> Tuple[bool, int]:
         """Insert a single-media record.
 
@@ -318,12 +343,17 @@ class Database:
                     f"""INSERT INTO {ITEMS_TABLE} (
                             source_chat_id, source_message_id, media_group_id, topic_id, sender_id,
                             media_type, file_id, file_unique_id, caption, anime_title, emoji,
-                            episode_number, status, final_caption, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            episode_number, status, final_caption, created_at, updated_at,
+                            telegram_media_type, logical_media_type, file_name, mime_type, file_size
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                  ?, ?, ?, ?, ?)""",
                     (
                         source_chat_id, source_message_id, media_group_id, topic_id, sender_id,
                         media_type, file_id, file_unique_id or "", caption, anime_title, emoji,
                         episode_number, status, final_caption, timestamp, timestamp,
+                        telegram_media_type or media_type,
+                        logical_media_type or telegram_media_type or media_type,
+                        file_name, mime_type, file_size,
                     ),
                 )
                 return True, int(cursor.lastrowid)
@@ -785,6 +815,11 @@ CREATE TABLE IF NOT EXISTS {ITEMS_TABLE} (
     episode_number TEXT,
     status TEXT NOT NULL DEFAULT '{Status.PENDING}',
     uncertain INTEGER NOT NULL DEFAULT 0,
+    telegram_media_type TEXT,
+    logical_media_type TEXT,
+    file_name TEXT,
+    mime_type TEXT,
+    file_size INTEGER,
     target_chat_id TEXT,
     target_message_id TEXT,
     published_at TEXT,

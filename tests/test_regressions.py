@@ -104,7 +104,7 @@ async def test_defect4_target_channel_never_converted_to_int(env):
 async def test_defect4_publisher_passes_string_target(publisher, db, fake_bot):
     _, row_id = await make_item(db)
     await publisher.publish_item_row(row_id)
-    assert fake_bot.copy_calls[0]["chat_id"] == "@aniwavebd"
+    assert fake_bot.send_video_calls[0]["chat_id"] == "@aniwavebd"
 
 
 # --------------------------------------------------------------------------- #
@@ -115,8 +115,8 @@ async def test_defect4_publisher_passes_string_target(publisher, db, fake_bot):
 async def test_defect5_captions_are_plain_text(publisher, db, fake_bot):
     _, row_id = await make_item(db, episode_number="12.5")
     await publisher.publish_item_row(row_id)
-    call = fake_bot.copy_calls[0]
-    assert call["parse_mode"] is None
+    call = fake_bot.send_video_calls[0]
+    assert call.get("parse_mode") is None
     # The caption contains characters MarkdownV2 reserves; it must still be sent.
     assert "." in call["caption"] and "@" in call["caption"]
 
@@ -316,7 +316,7 @@ async def test_publish_callback_actually_publishes(handlers, db, fake_bot):
     await handlers.handle_callback(update, FakeContext())
 
     assert (await db.get_item(row_id))["status"] == Status.PUBLISHED
-    assert len(fake_bot.copy_calls) == 1
+    assert len(fake_bot.send_video_calls) == 1
 
 
 async def test_cancel_callback_actually_cancels(handlers, db):

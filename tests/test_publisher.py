@@ -37,23 +37,24 @@ async def test_caption_sent_without_parse_mode(publisher, db, fake_bot):
     _, row_id = await make_item(db)
     outcome = await publisher.publish_item_row(row_id)
     assert outcome.result == "published"
-    call = fake_bot.copy_calls[0]
-    assert call["parse_mode"] is None
+    call = fake_bot.send_video_calls[0]
+    assert "parse_mode" not in call
+    assert call["parse_mode"] if "parse_mode" in call else True
     assert call["chat_id"] == "@aniwavebd"
-    assert "parse_mode" not in call["extra_keys"]
+    assert call["supports_streaming"] is True
 
 
 async def test_target_channel_passed_as_string(publisher, db, fake_bot):
     _, row_id = await make_item(db)
     await publisher.publish_item_row(row_id)
-    assert fake_bot.copy_calls[0]["chat_id"] == "@aniwavebd"
-    assert isinstance(fake_bot.copy_calls[0]["chat_id"], str)
+    assert fake_bot.send_video_calls[0]["chat_id"] == "@aniwavebd"
+    assert isinstance(fake_bot.send_video_calls[0]["chat_id"], str)
 
 
 async def test_generated_caption_used_for_publication(publisher, db, fake_bot):
     _, row_id = await make_item(db)
     await publisher.publish_item_row(row_id)
-    caption = fake_bot.copy_calls[0]["caption"]
+    caption = fake_bot.send_video_calls[0]["caption"]
     assert "One Piece" in caption
     assert "Episode: 1165" in caption
     assert "Channel: @aniwavebd" in caption
@@ -69,16 +70,16 @@ async def test_hd_claim_configuration_respected(env, tmp_path, fake_bot, db):
     hd_publisher = Publisher(fake_bot, db, hd_config)
     _, row_id = await make_item(db)
     await hd_publisher.publish_item_row(row_id)
-    assert "HD Quality" in fake_bot.copy_calls[0]["caption"]
+    assert "HD Quality" in fake_bot.send_video_calls[0]["caption"]
 
 
-async def test_copy_message_reuses_telegram_file(publisher, db, fake_bot):
-    """copy_message must be used instead of a download/re-upload."""
+async def test_existing_file_id_is_reused_without_download(publisher, db, fake_bot):
+    """The stored file_id is reused; the file is never downloaded."""
     _, row_id = await make_item(db, source_chat_id=SOURCE_CHAT, source_message_id=555)
     await publisher.publish_item_row(row_id)
-    call = fake_bot.copy_calls[0]
-    assert call["from_chat_id"] == SOURCE_CHAT
-    assert call["message_id"] == 555
+    call = fake_bot.send_video_calls[0]
+    assert call["video"] == "file-abc"
+    assert fake_bot.copy_calls == [], "no re-upload via copy_message"
 
 
 # --------------------------------------------------------------------------- #
@@ -245,7 +246,7 @@ async def test_successful_publish_stores_target_ids(publisher, db):
 
 async def test_not_published_before_telegram_confirms(publisher, db, fake_bot):
     """A failure must not be recorded as published."""
-    fake_bot.copy_error = Forbidden("bot is not a member")
+    fake_bot.video_error = Forbidden("bot is not a member")
     _, row_id = await make_item(db)
     outcome = await publisher.publish_item_row(row_id)
     assert outcome.result == "failed"
@@ -254,18 +255,18 @@ async def test_not_published_before_telegram_confirms(publisher, db, fake_bot):
 
 
 async def test_clear_failure_allows_retry(publisher, db, fake_bot):
-    fake_bot.copy_error = RetryAfter(30)
+    fake_bot.video_error = RetryAfter(30)
     _, row_id = await make_item(db)
     await publisher.publish_item_row(row_id)
     assert (await db.get_item(row_id))["status"] == Status.FAILED
 
-    fake_bot.copy_error = None
+    fake_bot.video_error = None
     outcome = await publisher.publish_item_row(row_id)
     assert outcome.result == "published"
 
 
 async def test_timeout_produces_uncertain_not_failed(publisher, db, fake_bot):
-    fake_bot.copy_error = TimedOut()
+    fake_bot.video_error = TimedOut()
     _, row_id = await make_item(db)
     outcome = await publisher.publish_item_row(row_id)
     assert outcome.result == "uncertain"
@@ -276,17 +277,17 @@ async def test_timeout_produces_uncertain_not_failed(publisher, db, fake_bot):
 
 
 async def test_uncertain_record_is_not_retried_automatically(publisher, db, fake_bot):
-    fake_bot.copy_error = TimedOut()
+    fake_bot.video_error = TimedOut()
     _, row_id = await make_item(db)
     await publisher.publish_item_row(row_id)
     assert (await db.get_item(row_id))["status"] == Status.UNCERTAIN
 
     fake_bot.copy_error = None
-    calls_before = len(fake_bot.copy_calls)
+    calls_before = len(fake_bot.send_video_calls)
     outcome = await publisher.publish_item_row(row_id)
     assert outcome.result == "refused"
     assert "uncertain" in outcome.reason
-    assert len(fake_bot.copy_calls) == calls_before
+    assert len(fake_bot.send_video_calls) == calls_before
 
 
 async def test_publish_refused_without_episode(publisher, db, fake_bot):
@@ -294,7 +295,7 @@ async def test_publish_refused_without_episode(publisher, db, fake_bot):
     outcome = await publisher.publish_item_row(row_id)
     assert outcome.result == "refused"
     assert "episode" in outcome.reason.lower()
-    assert fake_bot.copy_calls == []
+    assert fake_bot.send_video_calls == []
 
 
 async def test_publish_refused_for_missing_record(publisher):
@@ -315,7 +316,7 @@ async def test_concurrent_publish_sends_once(publisher, db, fake_bot):
     outcomes = await asyncio.gather(
         *[publisher.publish_item_row(row_id) for _ in range(10)]
     )
-    assert len(fake_bot.copy_calls) == 1
+    assert len(fake_bot.send_video_calls) == 1
     assert sum(1 for o in outcomes if o.result == "published") == 1
 
 

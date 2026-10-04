@@ -4,11 +4,32 @@ Responsibilities
 ----------------
 * Build plain-text captions (never MarkdownV2 - the generated caption contains
   reserved characters that previously caused ``BadRequest``).
+* Dispatch publication by the **original Telegram representation**, so a
+  document upload is never forced through a native-video send.
 * Construct the correct concrete PTB input-media classes for albums.
 * Reject album combinations Telegram cannot represent *before* claiming success.
 * Classify Telegram failures as **clear** (safe to retry) or **uncertain**
   (outcome unknown, must never be retried automatically).
 * Gate every send behind an atomic compare-and-set state transition.
+
+Publishing rules
+----------------
+``message.video``
+    ``bot.send_video(..., supports_streaming=True)``.
+
+``message.document`` (including ``.mkv``)
+    ``bot.send_document(...)``. Telegram cannot transcode a Matroska container,
+    so passing an MKV ``file_id`` to ``send_video`` would simply be rejected.
+    An MKV is therefore republished as a document - never silently dropped.
+
+MP4-like documents (``.mp4`` / ``.m4v`` / ``.mov`` / ``.webm``)
+    ``send_video`` is attempted first because Telegram can play those natively;
+    on a **clear** ``BadRequest`` the item is sent once as a document instead.
+    Ambiguous failures (timeouts) never fall back, because that would risk a
+    duplicate channel post.
+
+No media is ever downloaded or transcoded - Telegram's ``file_id`` is reused, so
+a 1.2 GB MKV costs no bandwidth on this machine.
 """
 
 from __future__ import annotations
@@ -43,6 +64,7 @@ from database import (
     SUPPORTED_MEDIA_TYPES,
     Database,
 )
+from media import NATIVE_VIDEO_DOCUMENT_EXTENSIONS, extension_of
 
 logger = logging.getLogger(__name__)
 
@@ -213,28 +235,86 @@ class Publisher:
     async def send_single_media(
         self,
         *,
-        source_chat_id: int,
-        source_message_id: int,
+        row: Dict[str, Any],
         target_chat_id: str,
         caption: Optional[str],
     ) -> Tuple[Tuple[int, ...], Optional[BaseException]]:
-        """Copy a single message, letting Telegram reuse the stored file.
+        """Publish one single-media row using its original Telegram representation.
 
-        ``copy_message`` is used instead of a download/re-upload so no bytes
-        travel through this machine.
+        The existing ``file_id`` is reused, so nothing is downloaded or
+        transcoded locally. See the module docstring for the per-type rules.
         """
         kwargs: Dict[str, Any] = {}
         if caption:
             kwargs["caption"] = fit_caption(caption)
+
+        telegram_type = str(
+            row.get("telegram_media_type") or row.get("media_type") or "document"
+        )
+        file_id = row["file_id"]
+        logical_type = str(row.get("logical_media_type") or telegram_type)
+
         try:
-            result = await self.bot.copy_message(
-                chat_id=target_chat_id,
-                from_chat_id=source_chat_id,
-                message_id=source_message_id,
-                **kwargs,
+            if telegram_type == "video":
+                sent = await self.bot.send_video(
+                    chat_id=target_chat_id, video=file_id,
+                    supports_streaming=True, **kwargs,
+                )
+            elif telegram_type == "photo":
+                sent = await self.bot.send_photo(chat_id=target_chat_id, photo=file_id, **kwargs)
+            elif telegram_type == "audio":
+                sent = await self.bot.send_audio(chat_id=target_chat_id, audio=file_id, **kwargs)
+            elif telegram_type == "animation":
+                sent = await self.bot.send_animation(chat_id=target_chat_id, animation=file_id, **kwargs)
+            elif telegram_type == "document":
+                # An MP4-like document may be playable natively; MKV and anything
+                # else goes straight to send_document, which always works.
+                if (
+                    logical_type == "video_document"
+                    and extension_of(row.get("file_name")) in NATIVE_VIDEO_DOCUMENT_EXTENSIONS
+                ):
+                    return await self._send_document_with_native_attempt(
+                        target_chat_id=target_chat_id, file_id=file_id, kwargs=kwargs
+                    )
+                sent = await self.bot.send_document(
+                    chat_id=target_chat_id, document=file_id, **kwargs
+                )
+            else:
+                logger.error("publish-unsupported-type item=%s type=%r", row.get("id"), telegram_type)
+                return (), None
+            return (int(sent.message_id),), None
+        except Exception as exc:  # noqa: BLE001 - classified by the caller
+            return (), exc
+
+    async def _send_document_with_native_attempt(
+        self, *, target_chat_id: str, file_id: str, kwargs: Dict[str, Any]
+    ) -> Tuple[Tuple[int, ...], Optional[BaseException]]:
+        """Try ``send_video`` once for an MP4-like document, else fall back.
+
+        The fallback happens **only** on ``BadRequest`` - a definite rejection.
+        Ambiguous errors (timeouts) propagate so the record becomes ``uncertain``
+        instead of risking a duplicate post.
+        """
+        try:
+            sent = await self.bot.send_video(
+                chat_id=target_chat_id, video=file_id, supports_streaming=True, **kwargs
             )
-            return (int(result.message_id),), None
-        except Exception as exc:  # noqa: BLE001 - classified below
+            logger.info("publish-native-video-accepted document=%s", file_id[-8:])
+            return (int(sent.message_id),), None
+        except BadRequest as exc:
+            logger.info(
+                "publish-native-video-rejected document=%s -> falling back to send_document (%s)",
+                file_id[-8:], type(exc).__name__,
+            )
+        except Exception as exc:  # noqa: BLE001 - ambiguous, do not fall back
+            return (), exc
+
+        try:
+            sent = await self.bot.send_document(
+                chat_id=target_chat_id, document=file_id, **kwargs
+            )
+            return (int(sent.message_id),), None
+        except Exception as exc:  # noqa: BLE001
             return (), exc
 
     async def send_album_media(
@@ -278,21 +358,22 @@ class Publisher:
         claimed = await self.db.claim_item_for_publishing(row_id)
         if not claimed:
             logger.info(
-                "publish-gate-closed kind=item row=%s", row_id
+                "event=publish-gate-closed item_id=%s reason=state-changed", row_id
             )
             return PublishOutcome(
                 result="refused", reason="state changed before publish", row_id=row_id, kind="item"
             )
 
         logger.info(
-            "publish-attempt kind=item row=%s chat=%s message=%s mode=%s",
+            "event=publish-start item_id=%s chat=%s message=%s type=%s logical=%s mode=%s",
             row_id, row["source_chat_id"], row["source_message_id"],
-            "auto" if self.config.auto_publish else "approval",
+            row.get("telegram_media_type") or row.get("media_type"),
+            row.get("logical_media_type") or "-",
+            "automatic" if self.config.auto_publish else "approval",
         )
 
         ids, exc = await self.send_single_media(
-            source_chat_id=int(row["source_chat_id"]),
-            source_message_id=int(row["source_message_id"]),
+            row=row,
             target_chat_id=target,
             caption=caption,
         )
@@ -345,13 +426,13 @@ class Publisher:
 
         claimed = await self.db.claim_album_for_publishing(album_id)
         if not claimed:
-            logger.info("publish-gate-closed kind=album row=%s", album_id)
+            logger.info("event=publish-gate-closed item_id=%s kind=album reason=state-changed", album_id)
             return PublishOutcome(
                 result="refused", reason="state changed before publish", row_id=album_id, kind="album"
             )
 
         logger.info(
-            "publish-attempt kind=album row=%s chat=%s group=%s items=%d",
+            "event=publish-start item_id=%s kind=album chat=%s media_group=%s items=%d",
             album_id, album["source_chat_id"], album["media_group_id"], len(items),
         )
 
@@ -378,7 +459,7 @@ class Publisher:
                 final_caption=caption,
             )
             logger.info(
-                "publish-succeeded kind=item row=%s targets=%s", row_id, list(ids)
+                "event=publish-success item_id=%s target_message_ids=%s", row_id, list(ids)
             )
             return PublishOutcome(
                 result="published" if ok else "failed",
@@ -393,13 +474,13 @@ class Publisher:
         uncertain, message = classify_telegram_error(exc)
         if uncertain:
             await self.db.mark_item_uncertain(row_id, message)
-            logger.error("publish-uncertain kind=item row=%s reason=%s", row_id, message)
+            logger.error("event=publish-uncertain item_id=%s reason=%s", row_id, message)
             return PublishOutcome(
                 result="uncertain", error=message, row_id=row_id, kind="item",
                 reason="inspect the channel before retrying",
             )
         await self.db.finish_item_failed(row_id, message)
-        logger.warning("publish-failed kind=item row=%s reason=%s", row_id, message)
+        logger.warning("event=publish-failed item_id=%s reason=%s", row_id, message)
         return PublishOutcome(result="failed", error=message, row_id=row_id, kind="item")
 
     async def _finalize_album(
@@ -418,7 +499,7 @@ class Publisher:
                 final_caption=caption,
             )
             logger.info(
-                "publish-succeeded kind=album row=%s targets=%s", album_id, list(ids)
+                "event=publish-success item_id=%s kind=album target_message_ids=%s", album_id, list(ids)
             )
             return PublishOutcome(
                 result="published" if ok else "failed",
@@ -433,11 +514,11 @@ class Publisher:
         uncertain, message = classify_telegram_error(exc)
         if uncertain:
             await self.db.mark_album_uncertain(album_id, message)
-            logger.error("publish-uncertain kind=album row=%s reason=%s", album_id, message)
+            logger.error("event=publish-uncertain item_id=%s kind=album reason=%s", album_id, message)
             return PublishOutcome(
                 result="uncertain", error=message, row_id=album_id, kind="album",
                 reason="inspect the channel before retrying",
             )
         await self.db.finish_album_failed(album_id, message)
-        logger.warning("publish-failed kind=album row=%s reason=%s", album_id, message)
+        logger.warning("event=publish-failed item_id=%s kind=album reason=%s", album_id, message)
         return PublishOutcome(result="failed", error=message, row_id=album_id, kind="album")

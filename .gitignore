@@ -1,10 +1,11 @@
 # --- Secrets: never commit real credentials ---
+# The sanitised template is the only .env file that may be tracked.
 .env
+.env.*
+!.env.example
+*.env
 .env.txt
 .env.local
-.env.*.local
-*.env
-!.env.example
 
 # --- Database (keep local data out of git) ---
 *.db

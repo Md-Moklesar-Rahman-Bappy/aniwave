@@ -325,7 +325,7 @@ async def test_approval_mode_does_not_publish(handlers, db, fake_bot):
     await handlers.handle_media(
         make_update(media={"video": True}, caption="One Piece EP 1165"), FakeContext()
     )
-    assert fake_bot.copy_calls == []
+    assert fake_bot.send_video_calls == []
 
 
 async def test_missing_episode_keeps_pending_and_warns(handlers, db, fake_bot):
@@ -334,7 +334,7 @@ async def test_missing_episode_keeps_pending_and_warns(handlers, db, fake_bot):
     row = await db.get_item_by_source(SOURCE_CHAT, 100)
     assert row["status"] == Status.PENDING
     assert row["episode_number"] is None
-    assert fake_bot.copy_calls == []
+    assert fake_bot.send_video_calls == []
     text = " ".join(update.message.reply.texts)
     assert "Edit Episode" in text or "episode" in text.lower()
 
@@ -374,7 +374,7 @@ async def test_auto_mode_without_episode_does_not_publish(db, publisher, album_s
     )
     row = await db.get_item_by_source(SOURCE_CHAT, 100)
     assert row["status"] == Status.PENDING
-    assert fake_bot.copy_calls == []
+    assert fake_bot.send_video_calls == []
 
 
 # --------------------------------------------------------------------------- #
@@ -425,7 +425,7 @@ async def test_publish_callback_publishes(handlers, db, fake_bot):
     _, row_id = await make_item(db)
     query = await _publish_callback(handlers, ui.KIND_ITEM, row_id)
     assert (await db.get_item(row_id))["status"] == Status.PUBLISHED
-    assert len(fake_bot.copy_calls) == 1
+    assert len(fake_bot.send_video_calls) == 1
     assert "Published successfully" in " ".join(query.message.texts)
 
 
@@ -433,7 +433,7 @@ async def test_publish_callback_is_idempotent_on_double_press(handlers, db, fake
     _, row_id = await make_item(db)
     await _publish_callback(handlers, ui.KIND_ITEM, row_id)
     await _publish_callback(handlers, ui.KIND_ITEM, row_id)
-    assert len(fake_bot.copy_calls) == 1
+    assert len(fake_bot.send_video_calls) == 1
 
 
 async def test_concurrent_publish_callbacks_send_once(handlers, db, fake_bot):
@@ -448,7 +448,7 @@ async def test_concurrent_publish_callbacks_send_once(handlers, db, fake_bot):
         )
         for q in queries
     ])
-    assert len(fake_bot.copy_calls) == 1
+    assert len(fake_bot.send_video_calls) == 1
     assert (await db.get_item(row_id))["status"] == Status.PUBLISHED
 
 
@@ -471,9 +471,9 @@ async def test_publish_callback_rejects_invalid_states(handlers, db, fake_bot, p
         await db.mark_item_uncertain(row_id, "crash")
     else:
         await db.claim_item_for_publishing(row_id)
-    calls_before = len(fake_bot.copy_calls)
+    calls_before = len(fake_bot.send_video_calls)
     query = await _publish_callback(handlers, ui.KIND_ITEM, row_id)
-    assert len(fake_bot.copy_calls) == calls_before
+    assert len(fake_bot.send_video_calls) == calls_before
     assert any(fragment in text.lower() for text, _ in query.answers)
 
 
@@ -500,7 +500,7 @@ async def test_uncertain_outcome_offers_resolution_buttons(handlers, db, fake_bo
     await db.claim_item_for_publishing(row_id)
     await db.mark_item_uncertain(row_id, "crash")
 
-    fake_bot.copy_error = TimedOut()
+    fake_bot.video_error = TimedOut()
     _, retry_row = await make_item(db, source_message_id=200)
     query = await _publish_callback(handlers, ui.KIND_ITEM, retry_row)
     assert (await db.get_item(retry_row))["status"] == Status.UNCERTAIN
@@ -556,7 +556,7 @@ async def test_canceled_item_cannot_be_published(handlers, db, fake_bot):
     _, row_id = await make_item(db)
     await db.cancel_item(row_id)
     await _publish_callback(handlers, ui.KIND_ITEM, row_id)
-    assert fake_bot.copy_calls == []
+    assert fake_bot.send_video_calls == []
     assert (await db.get_item(row_id))["status"] == Status.CANCELED
 
 
@@ -604,7 +604,7 @@ async def test_uncertain_confirm_absent_makes_retryable(handlers, db, fake_bot):
     assert (await db.get_item(row_id))["status"] == Status.FAILED
 
     await _publish_callback(handlers, ui.KIND_ITEM, row_id)
-    assert len(fake_bot.copy_calls) == 1
+    assert len(fake_bot.send_video_calls) == 1
 
 
 async def test_uncertain_confirmation_rejected_from_wrong_state(handlers, db):
@@ -653,7 +653,7 @@ async def test_retry_publishes_failed_item(handlers, db, fake_bot):
     update = make_update(text="/retry 1")
     await handlers.cmd_retry(update, FakeContext([str(row_id)]))
     assert (await db.get_item(row_id))["status"] == Status.PUBLISHED
-    assert len(fake_bot.copy_calls) == 1
+    assert len(fake_bot.send_video_calls) == 1
 
 
 async def test_retry_refuses_published(handlers, db, fake_bot):
@@ -664,7 +664,7 @@ async def test_retry_refuses_published(handlers, db, fake_bot):
     update = make_update(text="/retry")
     await handlers.cmd_retry(update, FakeContext([str(row_id)]))
     assert "already published" in update.message.reply.texts[0]
-    assert fake_bot.copy_calls == []
+    assert fake_bot.send_video_calls == []
 
 
 async def test_retry_refuses_uncertain(handlers, db, fake_bot):
@@ -674,7 +674,7 @@ async def test_retry_refuses_uncertain(handlers, db, fake_bot):
     update = make_update(text="/retry")
     await handlers.cmd_retry(update, FakeContext([str(row_id)]))
     assert "uncertain" in update.message.reply.texts[0]
-    assert fake_bot.copy_calls == []
+    assert fake_bot.send_video_calls == []
 
 
 async def test_retry_refuses_canceled(handlers, db):
@@ -698,7 +698,7 @@ async def test_retry_refuses_pending_and_points_at_button(handlers, db, fake_bot
     update = make_update(text="/retry")
     await handlers.cmd_retry(update, FakeContext([str(row_id)]))
     assert "Publish" in update.message.reply.texts[0]
-    assert fake_bot.copy_calls == []
+    assert fake_bot.send_video_calls == []
 
 
 async def test_retry_album_by_kind(handlers, db, fake_bot):

@@ -445,7 +445,7 @@ def test_run_polling_has_no_deprecated_timeout_arguments():
 def test_main_reports_invalid_configuration_without_a_token(monkeypatch, capsys):
     for key in (
         "TELEGRAM_BOT_TOKEN", "SOURCE_GROUP_ID", "TARGET_CHANNEL", "ADMIN_IDS",
-        "ONE_PIECE_TOPIC_ID", "NARUTO_TOPIC_ID", "BLEACH_TOPIC_ID", "AUTO_PUBLISH",
+        "WEB_SERIES_TOPIC_ID", "AUTO_PUBLISH",
         "INCLUDE_HD_CLAIM", "TIMEZONE", "DATABASE_PATH", "LOG_LEVEL",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -465,9 +465,7 @@ def test_main_config_error_never_prints_a_token(monkeypatch, capsys):
     monkeypatch.setenv("SOURCE_GROUP_ID", "not-a-number")
     monkeypatch.setenv("TARGET_CHANNEL", "@channel")
     monkeypatch.setenv("ADMIN_IDS", "1")
-    monkeypatch.setenv("ONE_PIECE_TOPIC_ID", "1")
-    monkeypatch.setenv("NARUTO_TOPIC_ID", "2")
-    monkeypatch.setenv("BLEACH_TOPIC_ID", "3")
+    monkeypatch.setenv("WEB_SERIES_TOPIC_ID", "33")
     monkeypatch.setenv("AUTO_PUBLISH", "false")
     monkeypatch.setenv("INCLUDE_HD_CLAIM", "false")
     monkeypatch.setenv("TIMEZONE", "Asia/Dhaka")
@@ -489,7 +487,7 @@ def test_preflight_detects_seeded_secret(tmp_path, monkeypatch):
     config = AppConfig.load({
         "TELEGRAM_BOT_TOKEN": "1:AAx",
         "SOURCE_GROUP_ID": "-1001", "TARGET_CHANNEL": "@channel", "ADMIN_IDS": "1",
-        "ONE_PIECE_TOPIC_ID": "1", "NARUTO_TOPIC_ID": "2", "BLEACH_TOPIC_ID": "3",
+        "WEB_SERIES_TOPIC_ID": "33",
         "AUTO_PUBLISH": "false", "INCLUDE_HD_CLAIM": "false", "TIMEZONE": "Asia/Dhaka",
         "DATABASE_PATH": "d.db", "LOG_LEVEL": "INFO",
     })

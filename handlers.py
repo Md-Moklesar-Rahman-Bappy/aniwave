@@ -29,7 +29,16 @@ import ui
 from albums import AlbumPart, AlbumService
 from caption import EpisodeValidationError, parse_episode, validate_episode_input
 from config import AppConfig, get_config
-from database import EDITABLE_STATES, SUPPORTED_MEDIA_TYPES, Database, Status
+from database import EDITABLE_STATES, Database, Status
+from media import (
+    TELEGRAM_MEDIA_ATTRS,
+    MediaInfo,
+    describe_media_type,
+    detect_telegram_media_type,
+    extract_file_id,
+    extract_file_unique_id,
+    extract_media,
+)
 from publisher import Publisher
 
 logger = logging.getLogger(__name__)
@@ -42,54 +51,48 @@ EDIT_CONVERSATION_TIMEOUT = 300
 
 _UNAUTHORIZED = "You are not authorized to use this bot."
 
-#: Attributes that make a message "supported media" for our purposes.
-_MEDIA_ATTRIBUTES: Tuple[str, ...] = ("video", "animation", "audio", "photo", "document")
+#: Kept for callers that still want the raw attribute list. Detection itself lives
+#: in :mod:`media` and must use truthiness - PTB models absent media as ``None``
+#: *or* an empty tuple depending on the attribute.
+_MEDIA_ATTRIBUTES: Tuple[str, ...] = TELEGRAM_MEDIA_ATTRS
 
 
 class SupportedMediaFilter(filters.MessageFilter):
     """Accept only the media types this bot publishes.
 
-    ``filters.Document`` in python-telegram-bot 21 is not a ``BaseFilter``
-    subclass and cannot be composed with ``|``, so a dedicated ``MessageFilter``
-    is used instead of a merged expression.
+    Implements ``filters.MessageFilter`` (a ``BaseFilter`` subclass) directly
+    because PTB 21.11.1's ``filters.Document`` is *not* a ``BaseFilter`` and
+    cannot be composed with ``|``. It is instantiated as ``SUPPORTED_MEDIA``
+    below - never passed as a bare class.
 
-    Album parts are accepted too: every part carries a supported media type and
-    a ``media_group_id``.
+    Presence is tested with truthiness, never ``is not None``: an empty
+    ``message.photo`` tuple would otherwise match every message and misroute
+    documents as photos.
     """
 
     def filter(self, message) -> bool:  # noqa: D102 - see class docstring
         if message is None:
             return False
+        # Album parts are accepted so they reach album collection.
         if getattr(message, "media_group_id", None):
             return True
-        return any(getattr(message, attribute, None) is not None for attribute in _MEDIA_ATTRIBUTES)
+        return detect_telegram_media_type(message) is not None
 
 
 SUPPORTED_MEDIA = SupportedMediaFilter()
 
-
-def describe_media_type(message) -> Optional[str]:
-    for attribute in _MEDIA_ATTRIBUTES:
-        if getattr(message, attribute, None) is not None:
-            return attribute
-    return None
-
-
-def extract_file_id(message, media_type: str) -> Optional[str]:
-    """Pick the right file id (largest photo size for photos)."""
-    if media_type == "photo":
-        sizes = getattr(message, "photo", None) or []
-        return getattr(sizes[-1], "file_id", None) if sizes else None
-    media = getattr(message, media_type, None)
-    return getattr(media, "file_id", None)
-
-
-def extract_file_unique_id(message, media_type: str) -> str:
-    if media_type == "photo":
-        sizes = getattr(message, "photo", None) or []
-        return getattr(sizes[-1], "file_unique_id", "") if sizes else ""
-    media = getattr(message, media_type, None)
-    return getattr(media, "file_unique_id", "") or ""
+#: Re-exported for backwards compatibility. Detection and extraction live in
+#: :mod:`media` so filtering, routing and publishing share one implementation.
+__all__ = [
+    "Handlers",
+    "SupportedMediaFilter",
+    "SUPPORTED_MEDIA",
+    "describe_media_type",
+    "detect_telegram_media_type",
+    "extract_file_id",
+    "extract_file_unique_id",
+    "extract_media",
+]
 
 
 class Handlers:
@@ -326,28 +329,55 @@ class Handlers:
     # ------------------------------------------------------------------ #
 
     def _media_route(self, update: Update) -> Optional[Tuple[int, Any]]:
-        """Validate a media message and return ``(topic_id, TopicConfig)``."""
+        """Validate a media message and return ``(topic_id, TopicConfig)``.
+
+        Every rejection is logged with an explicit ``reason=`` so a silently
+        ignored upload can be diagnosed from the log alone.
+        """
         message = update.effective_message
+        chat = getattr(update, "effective_chat", None)
+        chat_id = getattr(chat, "id", None)
+        chat_type = getattr(chat, "type", None)
+
+        def reject(reason: str) -> None:
+            logger.info(
+                "event=media-rejected reason=%s chat=%s thread=%s user=%s",
+                reason, chat_id, self._thread_id(update), self._admin_id(update),
+            )
+
         if message is None:
+            reject("no-message")
             return None
         user = update.effective_user
-        if user is None or getattr(user, "is_bot", False):
+        if user is None:
+            reject("no-user")
+            return None
+        if getattr(user, "is_bot", False):
+            reject("bot-sender")
             return None
         if getattr(message, "edit_date", None):
+            reject("edited-message")
             return None
-        chat = update.effective_chat
-        if chat is None or getattr(chat, "type", None) != "supergroup":
+        if chat is None:
+            reject("no-chat")
             return None
-        if int(getattr(chat, "id", 0)) != self.config.source_group_id:
+        if chat_type != "supergroup":
+            reject("not-a-supergroup")
+            return None
+        if int(getattr(chat, "id", 0) or 0) != self.config.source_group_id:
+            reject("wrong-source-chat")
             return None
         if not self.config.is_admin(getattr(user, "id", None)):
+            reject("unauthorized-user")
             return None
 
         topic_id = getattr(message, "message_thread_id", None)
         if topic_id is None:
+            reject("no-topic")
             return None
         topic = self.config.topic_for(int(topic_id))
         if topic is None:
+            reject("unconfigured-topic")
             return None
         return int(topic_id), topic
 
@@ -356,53 +386,51 @@ class Handlers:
         single-upload pipeline."""
         route = self._media_route(update)
         if route is None:
-            logger.debug(
-                "media-ignored user=%s chat=%s",
-                self._admin_id(update),
-                getattr(update.effective_chat, "id", None),
-            )
             return
         topic_id, topic = route
         message = update.effective_message
         assert message is not None
-        user = update.effective_user
-        assert user is not None
         chat = update.effective_chat
         assert chat is not None
+        user = update.effective_user
+        assert user is not None
 
-        media_type = describe_media_type(message)
-        if media_type is None or media_type not in SUPPORTED_MEDIA_TYPES:
-            logger.debug("media-unsupported-type type=%r", media_type)
-            return
-        file_id = extract_file_id(message, media_type)
-        if not file_id:
-            logger.debug("media-missing-file-id type=%s", media_type)
+        info = extract_media(message)
+        if info is None:
+            logger.info(
+                "event=media-rejected reason=unsupported-media chat=%s thread=%s message=%s",
+                getattr(chat, "id", None), topic_id, getattr(message, "message_id", None),
+            )
             return
 
-        if getattr(message, "media_group_id", None):
+        logger.info(
+            "event=media-received chat=%s message=%s thread=%s user=%s "
+            "telegram_type=%s logical_type=%s extension=%s media_group=%s",
+            chat.id, info.source_message_id, topic_id, getattr(user, "id", None),
+            info.telegram_type, info.logical_type, info.extension or "-",
+            info.media_group_id or "-",
+        )
+
+        if info.media_group_id:
             part = AlbumPart(
                 source_chat_id=int(chat.id),
-                source_message_id=int(message.message_id),
-                media_group_id=str(message.media_group_id),
+                source_message_id=int(getattr(message, "message_id", 0) or 0),
+                media_group_id=str(info.media_group_id),
                 topic_id=topic_id,
                 sender_id=int(user.id),
-                media_type=media_type,
-                file_id=file_id,
-                caption=message.caption,
+                media_type=info.telegram_type,
+                file_id=info.file_id,
+                caption=info.caption,
             )
             await self.albums.ingest_part(part, topic.title, topic.emoji)
             return
 
         await self._handle_single_media(
             update=update,
+            info=info,
             source_chat_id=int(chat.id),
-            source_message_id=int(message.message_id),
             topic_id=topic_id,
             sender_id=int(user.id),
-            media_type=media_type,
-            file_id=file_id,
-            file_unique_id=extract_file_unique_id(message, media_type),
-            caption=message.caption,
             topic=topic,
         )
 
@@ -410,40 +438,45 @@ class Handlers:
         self,
         *,
         update: Update,
+        info: MediaInfo,
         source_chat_id: int,
-        source_message_id: int,
         topic_id: int,
         sender_id: int,
-        media_type: str,
-        file_id: str,
-        file_unique_id: str,
-        caption: Optional[str],
         topic,
     ) -> None:
-        episode = parse_episode(caption)
+        episode = parse_episode(info.caption)
+        logger.info(
+            "event=media-accepted topic=%r admin=true telegram_type=%s logical_type=%s episode=%s",
+            topic.title, info.telegram_type, info.logical_type, episode or "-",
+        )
         inserted, row_id = await self.db.insert_media_item(
             source_chat_id=source_chat_id,
-            source_message_id=source_message_id,
+            source_message_id=info.source_message_id,
             topic_id=topic_id,
             sender_id=sender_id,
-            media_type=media_type,
-            file_id=file_id,
-            file_unique_id=file_unique_id,
-            caption=caption,
+            media_type=info.telegram_type,
+            file_id=info.file_id,
+            file_unique_id=info.file_unique_id,
+            caption=info.caption,
             anime_title=topic.title,
             emoji=topic.emoji,
             episode_number=episode,
+            telegram_media_type=info.telegram_type,
+            logical_media_type=info.logical_type,
+            file_name=info.file_name,
+            mime_type=info.mime_type,
+            file_size=info.file_size,
         )
         if not inserted:
             # Duplicate Telegram update: the database already owns this message.
             logger.info(
-                "media-duplicate chat=%s message=%s", source_chat_id, source_message_id
+                "event=media-duplicate chat=%s message=%s", source_chat_id, info.source_message_id
             )
             return
 
         logger.info(
-            "media-accepted chat=%s message=%s type=%s episode=%s topic=%s",
-            source_chat_id, source_message_id, media_type, episode, topic_id,
+            "event=media-created item_id=%s chat=%s message=%s type=%s episode=%s",
+            row_id, source_chat_id, info.source_message_id, info.telegram_type, episode or "-",
         )
 
         if self.config.auto_publish:
@@ -459,7 +492,7 @@ class Handlers:
             topic_label=f"{topic.emoji} {topic.title}",
             anime_title=topic.title,
             episode_number=episode,
-            media_type=media_type,
+            media_type=info.logical_type,
             kind=ui.KIND_ITEM,
             row_id=row_id,
         )
@@ -473,7 +506,7 @@ class Handlers:
         try:
             sent = await message.reply_text(text, reply_markup=keyboard)
         except TelegramError:
-            logger.exception("preview-send-failed row=%s", row_id)
+            logger.exception("event=preview-send-failed row=%s", row_id)
             return
         await self.db.set_item_preview(row_id, int(sent.message_id))
 

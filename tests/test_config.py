@@ -101,8 +101,10 @@ def test_album_quiet_seconds_parsed(env, raw, expected):
 
 
 def test_topics_built_from_environment(env):
+    """WEB_SERIES is declared in TOPIC_SPECS; the anime ids are extras."""
     config = AppConfig.load(env)
-    assert config.topic_ids() == [6, 8, 23]
+    assert config.topic_ids() == [6, 8, 23, 33]
+    assert config.topic_for(33).title == "Web Series"
     assert config.topic_for(23).title == "One Piece"
     assert config.topic_for(6).title == "Naruto"
     assert config.topic_for(8).title == "Bleach"
@@ -116,15 +118,15 @@ def test_topic_for_unknown_topic_returns_none(env):
 
 def test_build_topics_is_fresh_each_call(env):
     first = build_topics(env)
-    env["ONE_PIECE_TOPIC_ID"] = "99"
+    env["WEB_SERIES_TOPIC_ID"] = "99"
     second = build_topics(env)
     assert first != second
-    assert [t.topic_id for t in first if t.title == "One Piece"] == [23]
-    assert [t.topic_id for t in second if t.title == "One Piece"] == [99]
+    assert [t.topic_id for t in first if t.title == "Web Series"] == [33]
+    assert [t.topic_id for t in second if t.title == "Web Series"] == [99]
 
 
 def test_duplicate_topic_ids_rejected(env):
-    env["BLEACH_TOPIC_ID"] = env["ONE_PIECE_TOPIC_ID"]
+    env["MOVIE_NAME_TOPIC_ID"] = env["ONE_PIECE_TOPIC_ID"]
     with pytest.raises(ConfigError) as excinfo:
         AppConfig.load(env)
     assert "unique" in str(excinfo.value)
@@ -144,7 +146,7 @@ def test_is_admin_uses_numeric_ids(env):
 
 @pytest.mark.parametrize("missing", [
     "TELEGRAM_BOT_TOKEN", "SOURCE_GROUP_ID", "TARGET_CHANNEL", "ADMIN_IDS",
-    "ONE_PIECE_TOPIC_ID", "NARUTO_TOPIC_ID", "BLEACH_TOPIC_ID", "AUTO_PUBLISH",
+    "WEB_SERIES_TOPIC_ID", "AUTO_PUBLISH",
     "INCLUDE_HD_CLAIM", "TIMEZONE", "DATABASE_PATH", "LOG_LEVEL",
 ])
 def test_missing_required_variable_is_reported(env, missing):
@@ -225,14 +227,14 @@ def test_zero_source_group_rejected(env):
 
 
 def test_topic_id_must_be_positive_integer(env):
-    env["NARUTO_TOPIC_ID"] = "-6"
+    env["WEB_SERIES_TOPIC_ID"] = "-6"
     with pytest.raises(ConfigError) as excinfo:
         AppConfig.load(env)
-    assert "NARUTO_TOPIC_ID" in str(excinfo.value)
+    assert "WEB_SERIES_TOPIC_ID" in str(excinfo.value)
 
 
 def test_topic_id_must_be_numeric(env):
-    env["NARUTO_TOPIC_ID"] = "abc"
+    env["WEB_SERIES_TOPIC_ID"] = "abc"
     with pytest.raises(ConfigError):
         AppConfig.load(env)
 
@@ -331,49 +333,59 @@ def test_config_cache_roundtrip(env):
 def test_extra_topic_variables_are_discovered(env):
     from config import discover_topic_variables
 
-    env["WEB_SERIES_TOPIC_ID"] = "42"
+    env["MOVIE_NAME_TOPIC_ID"] = "42"
     found = discover_topic_variables(env)
-    assert found["WEB_SERIES_TOPIC_ID"] == "Web Series"
-    assert "ONE_PIECE_TOPIC_ID" not in found, "known anime vars are not extras"
+    assert found["MOVIE_NAME_TOPIC_ID"] == "Movie Name"
+    assert "WEB_SERIES_TOPIC_ID" not in found, "declared topics are not extras"
 
 
 def test_extra_topic_is_registered(env):
-    env["WEB_SERIES_TOPIC_ID"] = "42"
+    env["MOVIE_NAME_TOPIC_ID"] = "42"
     config = AppConfig.load(env)
     assert 42 in config.topic_ids()
-    assert config.topic_for(42).title == "Web Series"
+    assert config.topic_for(42).title == "Movie Name"
 
 
 def test_several_extra_topics(env):
-    env["WEB_SERIES_TOPIC_ID"] = "42"
+    env["DOCUMENTARY_TOPIC_ID"] = "42"
     env["MOVIE_NAME_TOPIC_ID"] = "43"
     config = AppConfig.load(env)
-    assert config.topic_for(42).title == "Web Series"
+    assert config.topic_for(42).title == "Documentary"
     assert config.topic_for(43).title == "Movie Name"
 
 
 def test_extra_topic_id_must_be_numeric(env):
-    env["WEB_SERIES_TOPIC_ID"] = "abc"
+    env["MOVIE_NAME_TOPIC_ID"] = "abc"
     with pytest.raises(ConfigError) as excinfo:
         AppConfig.load(env)
-    assert "WEB_SERIES_TOPIC_ID" in str(excinfo.value)
+    assert "MOVIE_NAME_TOPIC_ID" in str(excinfo.value)
 
 
-def test_missing_anime_topic_error_lists_discovered_extras(env):
-    env.pop("ONE_PIECE_TOPIC_ID")
-    env["WEB_SERIES_TOPIC_ID"] = "42"
+def test_missing_declared_topic_error_lists_discovered_extras(env):
+    env.pop("WEB_SERIES_TOPIC_ID")
+    env["MOVIE_NAME_TOPIC_ID"] = "42"
     with pytest.raises(ConfigError) as excinfo:
         AppConfig.load(env)
     message = str(excinfo.value)
-    assert "ONE_PIECE_TOPIC_ID" in message
     assert "WEB_SERIES_TOPIC_ID" in message
+    assert "MOVIE_NAME_TOPIC_ID" in message
 
 
 def test_topic_discovery_ignores_unrelated_variables(env):
     from config import discover_topic_variables
 
     env["SOME_OTHER_ID"] = "5"
-    assert discover_topic_variables(env) == {}
+    env["DATABASE_PATH"] = "x.db"
+    env["TARGET_CHANNEL"] = "@channel"
+    found = discover_topic_variables(env)
+    # The anime variables in the fixture are discovered extras; unrelated keys
+    # must never be picked up.
+    assert found
+    for key in found:
+        assert key.endswith("_TOPIC_ID")
+    assert "SOME_OTHER_ID" not in found
+    assert "DATABASE_PATH" not in found
+    assert "TARGET_CHANNEL" not in found
 
 
 def test_topic_ids_are_positive_integers(env):
