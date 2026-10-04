@@ -20,7 +20,7 @@ import os
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import aiosqlite
 

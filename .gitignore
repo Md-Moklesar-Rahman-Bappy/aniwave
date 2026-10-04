@@ -1,34 +1,59 @@
-# --- Environment / secrets ---
+# --- Secrets: never commit real credentials ---
 .env
 .env.txt
 .env.local
+.env.*.local
 *.env
-!*.env.example
+!.env.example
 
-# --- Database ---
+# --- Database (keep local data out of git) ---
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 *.sqlite
 *.sqlite3
+*.bak
 
 # --- Logs ---
 logs/
 *.log
 
-# --- Python / virtual environments ---
+# --- Python ---
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+
+# --- Virtual environments ---
 .venv/
 venv/
 env/
 ENV/
+env.bak/
+.venv*/
 .python-version
+
+# --- Packaging / build ---
 *.egg-info/
+build/
+dist/
+.eggs/
+
+# --- Test + coverage artefacts ---
 .pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.cache
+
+# --- Type checkers / linters ---
 .mypy_cache/
 .ruff_cache/
-.coverage
-htmlcov/
+.dmypy.json
 
 # --- IDE / editor ---
 .idea/
@@ -37,8 +62,11 @@ htmlcov/
 *.swo
 *.sublime-workspace
 *.sublime-project
+nbconvert.ipynb
+
+# --- OS noise ---
 .DS_Store
 Thumbs.db
-
-# --- OS ---
+ehthumbs.db
 Desktop.ini
+$RECYCLE.BIN/

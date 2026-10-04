@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal, InvalidOperation
-from typing import Iterable, List, Optional, Sequence
+from typing import List, Optional
 
 #: Telegram's documented caption limit for media messages.
 CAPTION_LIMIT = 1024

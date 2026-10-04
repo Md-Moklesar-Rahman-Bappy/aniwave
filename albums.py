@@ -16,7 +16,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from telegram import Bot
 from telegram.error import TelegramError
@@ -24,7 +24,7 @@ from telegram.error import TelegramError
 import ui
 from config import AppConfig, get_config
 from caption import parse_episode
-from database import Database, Status, iso, now_iso
+from database import Database, Status, iso
 from publisher import PublishOutcome, Publisher
 
 logger = logging.getLogger(__name__)

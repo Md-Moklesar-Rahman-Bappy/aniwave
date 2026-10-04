@@ -1,5 +1,17 @@
-python-telegram-bot[virus-scanner]>=21.0,<22.0
+# AniWave Telegram Publishing Bot - runtime + test dependencies.
+# Pinned exactly so a fresh Windows/Git Bash install is reproducible.
+#
+# python-telegram-bot is pinned to the version this project is written against.
+# aiosqlite provides the async SQLite driver; tzdata is REQUIRED on Windows
+# because the interpreter ships no IANA timezone database, and config.py
+# validates TIMEZONE with zoneinfo.ZoneInfo.
+
+python-telegram-bot==21.11.1
 python-dotenv==1.0.1
 aiosqlite==0.20.0
-pytest==8.2.2
-pytest-asyncio==0.23.7
+tzdata==2026.5
+
+# Test tooling
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
