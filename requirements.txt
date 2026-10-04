@@ -7,7 +7,7 @@
 # validates TIMEZONE with zoneinfo.ZoneInfo.
 
 python-telegram-bot==21.11.1
-python-dotenv==1.0.1
+python-dotenv==1.2.2
 aiosqlite==0.20.0
 tzdata==2026.5
 
