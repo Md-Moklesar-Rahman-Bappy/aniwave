@@ -9,6 +9,8 @@ callback query without raising.
 from __future__ import annotations
 
 import logging
+import time
+import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 from telegram import Update
@@ -21,6 +23,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.warnings import PTBUserWarning
 
 import ui
 from albums import AlbumPart, AlbumService
@@ -117,8 +120,13 @@ class Handlers:
         return self.config.is_admin(self._admin_id(update))
 
     def _reject_unauthorized(self, update: Update) -> None:
+        """Log a rejected authorization attempt. Safe to call with a partial update."""
+        chat_id = None
+        chat = getattr(update, "effective_chat", None)
+        if chat is not None:
+            chat_id = getattr(chat, "id", None)
         logger.warning(
-            "auth-rejected user=%s chat=%s", self._admin_id(update), getattr(update.effective_chat, "id", None)
+            "auth-rejected user=%s chat=%s", self._admin_id(update), chat_id
         )
 
     async def _reply(self, update: Update, text: str, **kwargs) -> None:
@@ -157,7 +165,7 @@ class Handlers:
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_admin_update(update):
-            await self._reject_unauthorized(update)
+            self._reject_unauthorized(update)
             await self._reply(update, _UNAUTHORIZED)
             return
         await self._reply(update, ui.help_text(config=self.config))
@@ -640,6 +648,7 @@ class Handlers:
         context.user_data["edit_kind"] = kind
         context.user_data["edit_row_id"] = row_id
         context.user_data["edit_admin_id"] = getattr(query.from_user, "id", None)
+        context.user_data["edit_started_at"] = time.monotonic()
 
         current = row.get("episode_number") or "not set"
         await self._answer(query, "Send the new episode number")
@@ -665,6 +674,18 @@ class Handlers:
         if not self.config.is_admin(self._admin_id(update)):
             await self._reply(update, _UNAUTHORIZED)
             return ConversationHandler.END
+
+        # PTB's own conversation_timeout is inert without the job-queue extra,
+        # so the session deadline is enforced here.
+        started = context.user_data.get("edit_started_at")
+        if isinstance(started, (int, float)) and (time.monotonic() - started) > EDIT_CONVERSATION_TIMEOUT:
+            logger.info(
+                "edit-conversation-expired kind=%s row=%s user=%s", kind, row_id, self._admin_id(update)
+            )
+            self._clear_edit_state(context)
+            await self._reply(update, "This edit session expired. Press Edit Episode to start again.")
+            return ConversationHandler.END
+
         if owner is not None and self._admin_id(update) != owner:
             await self._reply(update, "Another admin started this edit session.")
             return STATE_EDIT_EPISODE
@@ -709,10 +730,13 @@ class Handlers:
         await self._refresh_preview(kind, row_id, row, episode)
         await self._reply(update, f"Episode set to {episode}.")
 
-        context.user_data.pop("edit_kind", None)
-        context.user_data.pop("edit_row_id", None)
-        context.user_data.pop("edit_admin_id", None)
+        self._clear_edit_state(context)
         return ConversationHandler.END
+
+    @staticmethod
+    def _clear_edit_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+        for key in ("edit_kind", "edit_row_id", "edit_admin_id", "edit_started_at"):
+            context.user_data.pop(key, None)
 
     async def _refresh_preview(self, kind: str, row_id: int, row: Dict[str, Any], episode: str) -> None:
         """Update the stored preview message so buttons reflect the new value."""
@@ -749,23 +773,44 @@ class Handlers:
     # ------------------------------------------------------------------ #
 
     def build_edit_conversation(self) -> ConversationHandler:
-        return ConversationHandler(
-            entry_points=[
-                CallbackQueryHandler(self.cb_edit_entry, pattern=r"^aw:e:[ma]:[0-9]{1,12}$"),
-            ],
-            states={
-                STATE_EDIT_EPISODE: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_episode_input),
+        """Build the Edit Episode conversation.
+
+        Two python-telegram-bot specifics are handled deliberately:
+
+        * ``per_message=False`` is required. With ``per_message=True`` the
+          conversation is keyed by the callback's message id, so the follow-up
+          text message (a *different* message) is rejected and the workflow can
+          never complete. python-telegram-bot emits a ``PTBUserWarning`` about
+          this; the warning is suppressed only for this construction, with
+          justification, because the alternative is a broken feature.
+        * ``conversation_timeout`` is silently ignored unless the optional
+          ``job-queue`` extra (APScheduler) is installed, which it is not here.
+          The timeout is therefore enforced by :meth:`on_episode_input` against
+          ``edit_started_at``.
+        """
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r".*per_message=False.*",
+                category=PTBUserWarning,
+            )
+            return ConversationHandler(
+                entry_points=[
+                    CallbackQueryHandler(self.cb_edit_entry, pattern=r"^aw:e:[ma]:[0-9]{1,12}$"),
                 ],
-            },
-            fallbacks=[CommandHandler("cancel", self.cmd_cancel)],
-            conversation_timeout=EDIT_CONVERSATION_TIMEOUT,
-            per_user=True,
-            per_chat=False,
-            per_message=False,
-            allow_reentry=False,
-            name="edit_episode",
-        )
+                states={
+                    STATE_EDIT_EPISODE: [
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_episode_input),
+                    ],
+                },
+                fallbacks=[CommandHandler("cancel", self.cmd_cancel)],
+                conversation_timeout=EDIT_CONVERSATION_TIMEOUT,
+                per_user=True,
+                per_chat=False,
+                per_message=False,
+                allow_reentry=False,
+                name="edit_episode",
+            )
 
     def get_handlers(self) -> List[Any]:
         """Handler registration order matters.

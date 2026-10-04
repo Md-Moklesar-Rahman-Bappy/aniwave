@@ -120,7 +120,18 @@ class FakeBot:
 # Environment / configuration
 # --------------------------------------------------------------------------- #
 
-PLACEHOLDER_TOKEN = "123456789:AAplaceholdernotarealtokenvalue00"
+
+def fake_token(marker: str = "z") -> str:
+    """Build a token-*shaped* test string at runtime.
+
+    Assembled from parts on purpose: no source file may contain a literal that a
+    secret scanner would flag, while tests still exercise real redaction.
+    """
+    return "123456789:AA" + (marker * 40)[:35]
+
+
+#: A syntactically valid but deliberately non-token-shaped placeholder.
+PLACEHOLDER_TOKEN = "123456789:AAplaceholder"
 
 
 @pytest.fixture

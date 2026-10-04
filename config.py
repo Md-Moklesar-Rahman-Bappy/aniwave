@@ -139,6 +139,45 @@ TOPIC_SPECS: Tuple[Tuple[str, str, str], ...] = (
 )
 
 
+#: Suffix that turns any ``<NAME>_TOPIC_ID`` environment variable into a topic.
+TOPIC_ID_SUFFIX = "_TOPIC_ID"
+
+#: Emoji given to topics discovered from an extra ``<NAME>_TOPIC_ID`` variable.
+DEFAULT_TOPIC_EMOJI = "\U0001F4C1"
+
+#: Variable names already covered by :data:`TOPIC_SPECS`.
+KNOWN_TOPIC_VARS = frozenset(name for name, _title, _emoji in TOPIC_SPECS)
+
+
+def discover_topic_variables(env: Mapping[str, str]) -> Dict[str, str]:
+    """Return extra ``<NAME>_TOPIC_ID`` variables found in *env*.
+
+    This is what makes the bot configuration-driven: supporting a new anime or
+    web series needs a new line in ``.env`` and nothing else - no handler
+    changes. ``WEB_SERIES_TOPIC_ID``, for example, becomes the topic
+    "Web Series".
+    """
+    found: Dict[str, str] = {}
+    for key, value in env.items():
+        if not key.endswith(TOPIC_ID_SUFFIX):
+            continue
+        if key in KNOWN_TOPIC_VARS:
+            continue
+        prefix = key[: -len(TOPIC_ID_SUFFIX)]
+        if not prefix:
+            continue
+        title = prefix.replace("_", " ").title()
+        found[key] = title
+    return dict(sorted(found.items()))
+
+
+def _derive_topic_specs(env: Mapping[str, str]) -> List[Tuple[str, str, str]]:
+    specs = [(name, title, emoji) for name, title, emoji in TOPIC_SPECS]
+    for var_name, title in discover_topic_variables(env).items():
+        specs.append((var_name, title, DEFAULT_TOPIC_EMOJI))
+    return specs
+
+
 def build_topics(env: Mapping[str, str]) -> Tuple[TopicConfig, ...]:
     """Build a fresh, immutable topic tuple from *env*.
 
@@ -147,7 +186,7 @@ def build_topics(env: Mapping[str, str]) -> Tuple[TopicConfig, ...]:
     """
     topics: List[TopicConfig] = []
     seen: Dict[int, str] = {}
-    for var_name, title, emoji in TOPIC_SPECS:
+    for var_name, title, emoji in _derive_topic_specs(env):
         raw = _require(env, var_name)
         topic_id = _parse_topic_id(var_name, raw)
         if topic_id in seen:
@@ -168,10 +207,21 @@ def build_topics(env: Mapping[str, str]) -> Tuple[TopicConfig, ...]:
 def _require(env: Mapping[str, str], name: str) -> str:
     raw = env.get(name)
     if raw is None:
-        raise ConfigError(
+        message = (
             f"{name} is not set. Copy .env.example to .env and fill in every value. "
             f"Never commit a real token."
         )
+        if name.endswith(TOPIC_ID_SUFFIX):
+            extras = discover_topic_variables(env)
+            if extras:
+                found = ", ".join(f"{key} (title {title!r})" for key, title in extras.items())
+                message += (
+                    f" Other topic variables were detected and will also be registered: "
+                    f"{found}. Any '<NAME>{TOPIC_ID_SUFFIX}' variable in .env becomes a topic, "
+                    f"so {name} must be present as well (or removed from the required list "
+                    f"in config.py TOPIC_SPECS)."
+                )
+        raise ConfigError(message)
     value = raw.strip()
     if not value:
         raise ConfigError(f"{name} is set but blank. Provide a value in .env.")

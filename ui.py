@@ -15,8 +15,9 @@ from typing import Optional, Tuple
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 #: ``aw:<action>:<kind>:<id>`` - compact, validated, and never able to address a
-#: table/row outside the two known record kinds.
-CALLBACK_PATTERN = re.compile(r"^aw:(?P<act>[a-z]{2}):(?P<kind>[ma]):(?P<id>[0-9]{1,12})$")
+#: table/row outside the two known record kinds. Actions are one **or two**
+#: lowercase letters (``p``, ``c``, ``e``, ``up``, ``uf``, ``uc``).
+CALLBACK_PATTERN = re.compile(r"^aw:(?P<act>[a-z]{1,2}):(?P<kind>[ma]):(?P<id>[0-9]{1,12})$")
 
 KIND_ITEM = "m"
 KIND_ALBUM = "a"
@@ -28,6 +29,11 @@ ACT_UNCERTAIN_PUBLISHED = "up"
 ACT_UNCERTAIN_ABSENT = "uf"
 ACT_CONFIRM_ABSENT = "uc"
 
+#: Only these actions are ever dispatched.
+ALLOWED_ACTIONS = frozenset(
+    {ACT_PUBLISH, ACT_EDIT, ACT_CANCEL, ACT_UNCERTAIN_PUBLISHED, ACT_UNCERTAIN_ABSENT, ACT_CONFIRM_ABSENT}
+)
+
 _PREFIX = "aw"
 
 
@@ -37,17 +43,24 @@ def encode_callback(action: str, kind: str, row_id: int) -> str:
 
 
 def decode_callback(data: Optional[str]) -> Optional[Tuple[str, str, int]]:
-    """Parse callback data. Returns ``None`` for anything unexpected."""
+    """Parse callback data. Returns ``None`` for anything unexpected.
+
+    The action must be one the bot actually dispatches, so a forged callback can
+    never reach an unhandled branch.
+    """
     if not data or not isinstance(data, str):
         return None
     match = CALLBACK_PATTERN.match(data)
     if not match:
         return None
+    action = match.group("act")
+    if action not in ALLOWED_ACTIONS:
+        return None
     try:
         row_id = int(match.group("id"))
     except ValueError:  # pragma: no cover - regex already guarantees digits
         return None
-    return match.group("act"), match.group("kind"), row_id
+    return action, match.group("kind"), row_id
 
 
 def parse_target(reference: Optional[str]) -> Optional[Tuple[str, int]]:

@@ -22,9 +22,8 @@ import asyncio
 import logging
 import sys
 import time
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
-from telegram import Update
 from telegram.error import TelegramError
 from telegram.ext import Application, ApplicationBuilder
 
@@ -164,7 +163,13 @@ async def post_init(application: Application) -> None:
     logger.info("startup-album-recovery finalized=%d", len(results))
 
     albums.start(application)
-    logger.info("startup-complete version=%s mode=%s", APP_VERSION, application.bot_data["config"].auto_publish)
+    config: AppConfig = application.bot_data["config"]
+    logger.info(
+        "startup-complete version=%s mode=%s db=%s",
+        APP_VERSION,
+        "automatic" if config.auto_publish else "approval",
+        database._safe_path(),
+    )
 
 
 async def post_shutdown(application: Application) -> None:
@@ -196,7 +201,7 @@ async def _notify_uncertain(application: Application, recovered: dict) -> None:
     lines += ["", "These will NOT be retried automatically. Use /uncertain to resolve them."]
     try:
         await application.bot.send_message(chat_id=config.source_group_id, text="\n".join(lines))
-    except TelegramError:
+    except Exception:  # noqa: BLE001 - never block startup on a failed notice
         logger.exception("uncertain-notification-failed")
 
 
@@ -205,15 +210,40 @@ async def _notify_uncertain(application: Application, recovered: dict) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _describe_update(update: object) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    """Extract (chat_id, message_id, user_id) without assuming a concrete type.
+
+    Duck typing keeps diagnostics useful even when the update is partial.
+    """
+    if update is None:
+        return None, None, None
+    chat = getattr(update, "effective_chat", None)
+    user = getattr(update, "effective_user", None)
+    message = getattr(update, "effective_message", None)
+    if chat is None and user is None and message is None:
+        # Callback queries carry their sender on the query itself.
+        query = getattr(update, "callback_query", None)
+        if query is not None:
+            query_user = getattr(query, "from_user", None)
+            message = getattr(query, "message", None)
+            chat = getattr(message, "chat", None)
+            return (
+                getattr(chat, "id", None),
+                getattr(message, "message_id", None),
+                getattr(query_user, "id", None),
+            )
+    return (
+        getattr(chat, "id", None),
+        getattr(message, "message_id", None),
+        getattr(user, "id", None),
+    )
+
+
 async def error_handler(update: object, context: Any) -> None:
     """Log unexpected failures with safe context and notify admins sparingly."""
     error = getattr(context, "error", None)
     update_type = type(update).__name__ if update is not None else "None"
-    chat_id = message_id = user_id = None
-    if isinstance(update, Update):
-        chat_id = getattr(update.effective_chat, "id", None)
-        user_id = getattr(update.effective_user, "id", None)
-        message_id = getattr(update.effective_message, "message_id", None)
+    chat_id, message_id, user_id = _describe_update(update)
 
     logger.error(
         "unhandled-error update=%s chat=%s message=%s user=%s error_type=%s",
@@ -246,7 +276,7 @@ async def error_handler(update: object, context: Any) -> None:
                 "No secret values are included in this message."
             ),
         )
-    except TelegramError:
+    except Exception:  # noqa: BLE001 - the error handler must never raise
         logger.debug("error-notification-failed", exc_info=True)
 
 

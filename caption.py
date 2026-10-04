@@ -158,12 +158,24 @@ def validate_episode_input(text: Optional[str]) -> str:
 
 _SEPARATOR = "━" * 14
 
+#: Anime titles are short. This bound is defensive: a pathological title must
+#: never push the *required* lines (episode/audio/subtitle) out of the caption
+#: before optional sections have had a chance to be shed.
+MAX_TITLE_LENGTH = 100
+
+
+def _bound_title(anime_title: str) -> str:
+    title = " ".join(str(anime_title or "").split())
+    if len(title) <= MAX_TITLE_LENGTH:
+        return title
+    return title[: MAX_TITLE_LENGTH - 1].rstrip() + "…"
+
 
 def _required_lines(emoji: str, anime_title: str, episode_number: str, channel: str) -> List[str]:
     return [
         "\U0001F525 NEW EPISODE RELEASED \U0001F525",
         "",
-        f"{emoji} {anime_title}".strip(),
+        f"{emoji} {_bound_title(anime_title)}".strip(),
         "",
         f"\U0001F4FA Episode: {episode_number}",
         "\U0001F399 Audio: Japanese",

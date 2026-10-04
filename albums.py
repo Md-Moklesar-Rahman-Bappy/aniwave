@@ -103,6 +103,7 @@ class AlbumService:
         Duplicate Telegram updates are absorbed by the database's uniqueness
         constraints, so replaying the same update is harmless.
         """
+        received = iso(self._now())
         album_id, created = await self.db.upsert_album(
             source_chat_id=part.source_chat_id,
             media_group_id=part.media_group_id,
@@ -110,6 +111,7 @@ class AlbumService:
             sender_id=part.sender_id,
             anime_title=topic_title,
             emoji=topic_emoji,
+            received_at=received,
         )
         added = await self.db.add_album_item(
             album_id=album_id,
@@ -118,6 +120,7 @@ class AlbumService:
             media_type=part.media_type,
             file_id=part.file_id,
             original_caption=part.caption,
+            received_at=received,
         )
         logger.info(
             "album-part album=%s group=%s message=%s type=%s new=%s album_created=%s",
@@ -299,13 +302,22 @@ class AlbumService:
         return results
 
     def start(self, application: Optional[Any] = None) -> Optional[asyncio.Task]:
-        """Start the reconciler loop, tracked so shutdown can cancel it."""
+        """Start the reconciler loop, tracked so shutdown can cancel it.
+
+        ``Application.create_task`` is used only when the application is already
+        running. ``post_init`` runs *before* ``Application.start()``, so at that
+        point ``application.running`` is ``False`` and PTB would emit
+        "tasks created while the application is not running won't be
+        automatically awaited" and leave the task untracked. A plain
+        :func:`asyncio.create_task` plus our own handle avoids that; the loop
+        handles its own exceptions and :meth:`stop` cancels it.
+        """
         if self._task is not None and not self._task.done():
             return self._task
         self._stopping.clear()
-        if application is not None and hasattr(application, "create_task"):
+        if application is not None and getattr(application, "running", False):
             task = application.create_task(self.run_forever(), name="album-reconciler")
-        else:  # pragma: no cover - only used outside PTB
+        else:
             task = asyncio.create_task(self.run_forever(), name="album-reconciler")
         self._task = task
         return task

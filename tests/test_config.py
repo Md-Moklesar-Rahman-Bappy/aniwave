@@ -17,7 +17,7 @@ from config import (
     reset_config_cache,
     scan_for_secrets,
 )
-from tests.conftest import PLACEHOLDER_TOKEN
+from tests.conftest import PLACEHOLDER_TOKEN, fake_token
 
 
 # --------------------------------------------------------------------------- #
@@ -273,14 +273,14 @@ def test_error_messages_never_contain_the_token(env):
 
 
 def test_redact_removes_token_shaped_strings():
-    text = "leaking 123456789:AAabcdefghijklmnopqrstuvwxyz012345 here"
+    text = "leaking " + fake_token("a") + " here"
     cleaned = redact(text)
     assert "123456789:AA" not in cleaned
     assert REDACTED in cleaned
 
 
 def test_redact_removes_known_secret():
-    secret = "999888777:ZZsecretvaluehere_abcdefghijklmnop"
+    secret = fake_token("q")
     cleaned = redact(f"token is {secret} ok", secrets=(secret,))
     assert secret not in cleaned
 
@@ -321,3 +321,62 @@ def test_config_cache_roundtrip(env):
     config = load_config(env)
     assert isinstance(config, AppConfig)
     reset_config_cache()
+
+
+# --------------------------------------------------------------------------- #
+# Configuration-driven topics (new ones need no handler changes)
+# --------------------------------------------------------------------------- #
+
+
+def test_extra_topic_variables_are_discovered(env):
+    from config import discover_topic_variables
+
+    env["WEB_SERIES_TOPIC_ID"] = "42"
+    found = discover_topic_variables(env)
+    assert found["WEB_SERIES_TOPIC_ID"] == "Web Series"
+    assert "ONE_PIECE_TOPIC_ID" not in found, "known anime vars are not extras"
+
+
+def test_extra_topic_is_registered(env):
+    env["WEB_SERIES_TOPIC_ID"] = "42"
+    config = AppConfig.load(env)
+    assert 42 in config.topic_ids()
+    assert config.topic_for(42).title == "Web Series"
+
+
+def test_several_extra_topics(env):
+    env["WEB_SERIES_TOPIC_ID"] = "42"
+    env["MOVIE_NAME_TOPIC_ID"] = "43"
+    config = AppConfig.load(env)
+    assert config.topic_for(42).title == "Web Series"
+    assert config.topic_for(43).title == "Movie Name"
+
+
+def test_extra_topic_id_must_be_numeric(env):
+    env["WEB_SERIES_TOPIC_ID"] = "abc"
+    with pytest.raises(ConfigError) as excinfo:
+        AppConfig.load(env)
+    assert "WEB_SERIES_TOPIC_ID" in str(excinfo.value)
+
+
+def test_missing_anime_topic_error_lists_discovered_extras(env):
+    env.pop("ONE_PIECE_TOPIC_ID")
+    env["WEB_SERIES_TOPIC_ID"] = "42"
+    with pytest.raises(ConfigError) as excinfo:
+        AppConfig.load(env)
+    message = str(excinfo.value)
+    assert "ONE_PIECE_TOPIC_ID" in message
+    assert "WEB_SERIES_TOPIC_ID" in message
+
+
+def test_topic_discovery_ignores_unrelated_variables(env):
+    from config import discover_topic_variables
+
+    env["SOME_OTHER_ID"] = "5"
+    assert discover_topic_variables(env) == {}
+
+
+def test_topic_ids_are_positive_integers(env):
+    config = AppConfig.load(env)
+    for topic_id in config.topic_ids():
+        assert isinstance(topic_id, int) and topic_id > 0

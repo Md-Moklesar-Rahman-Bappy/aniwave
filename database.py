@@ -439,17 +439,20 @@ class Database:
         sender_id: int,
         anime_title: str = "",
         emoji: str = "",
+        received_at: Optional[str] = None,
     ) -> Tuple[int, bool]:
         """Create the album if new; return ``(album_id, created)``.
 
-        Re-arrivals for a known album never reset its state.
+        Re-arrivals for a known album never reset its state. ``received_at``
+        lets the caller supply the arrival timestamp so album timing derives from
+        a single clock rather than the wall clock.
         """
         assert self._conn is not None
         existing = await self.get_album_by_group(source_chat_id, media_group_id)
         if existing is not None:
             return int(existing["id"]), False
 
-        timestamp = now_iso()
+        timestamp = received_at or now_iso()
         try:
             async with self._transaction() as conn:
                 cursor = await conn.execute(
@@ -479,14 +482,16 @@ class Database:
         media_type: str,
         file_id: str,
         original_caption: Optional[str] = None,
+        received_at: Optional[str] = None,
     ) -> bool:
         """Append an album part idempotently.
 
         Returns ``True`` when the part was newly inserted. Duplicate Telegram
         updates and duplicate parts are rejected by the database.
+        ``received_at`` lets the caller keep arrival timing on one clock.
         """
         assert self._conn is not None
-        timestamp = now_iso()
+        timestamp = received_at or now_iso()
         try:
             async with self._transaction() as conn:
                 cursor = await conn.execute(
