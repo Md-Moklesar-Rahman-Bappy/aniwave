@@ -123,9 +123,12 @@ class Database:
         if parent:
             os.makedirs(parent, exist_ok=True)
 
-        conn = await aiosqlite.connect(target)
-        # Manual transaction control (see _transaction).
-        conn.isolation_level = None
+        # isolation_level must be supplied here: aiosqlite owns the underlying
+        # sqlite3 connection on a worker thread, so touching the attribute later
+        # would raise "SQLite objects created in a thread can only be used in
+        # that same thread". None = autocommit, with transactions managed
+        # explicitly in _transaction().
+        conn = await aiosqlite.connect(target, isolation_level=None)
         conn.row_factory = aiosqlite.Row
         self._conn = conn
 
@@ -608,6 +611,19 @@ class Database:
         return await self._cas(
             ALBUMS_TABLE, album_id, (Status.PUBLISHING,), Status.UNCERTAIN,
             {"last_error": reason[:500], "uncertain": 1},
+        )
+
+    async def fail_album_if_publishable(self, album_id: int, error: str) -> bool:
+        """Record a pre-send rejection (nothing was sent, so ``failed`` is safe)."""
+        return await self._cas(
+            ALBUMS_TABLE, album_id, PUBLISHABLE_STATES, Status.FAILED,
+            {"last_error": error[:500], "uncertain": 0},
+        )
+
+    async def fail_item_if_publishable(self, row_id: int, error: str) -> bool:
+        return await self._cas(
+            ITEMS_TABLE, row_id, PUBLISHABLE_STATES, Status.FAILED,
+            {"last_error": error[:500], "uncertain": 0},
         )
 
     async def cancel_album(self, album_id: int) -> bool:
